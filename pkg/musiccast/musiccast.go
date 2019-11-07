@@ -47,10 +47,10 @@ type Device struct {
 	Status   Status   `json:"status"`
 	Playback Playback `json:"playback"`
 
-	extendedControlBaseURL url.URL
-	httpClient             *http.Client
-	avTransport            *av1.AVTransport1
-	mutex                  sync.RWMutex
+	URL         url.URL
+	httpClient  *http.Client
+	avTransport *av1.AVTransport1
+	mutex       sync.RWMutex
 }
 
 var broker = pubsub.New(1)
@@ -76,17 +76,17 @@ func Discover() (devices []*Device, err error) {
 func NewDevice(maybeRoot upnp.MaybeRootDevice) (device *Device, err error) {
 	err = maybeRoot.Err
 	if err == nil {
-		extendedControlURL := maybeRoot.Root.Device.PresentationURL.URL
-		extendedControlURL.Path = path.Join(extendedControlURL.Path, "YamahaExtendedControl", "v1")
+		ExtendedControlURL := maybeRoot.Root.Device.PresentationURL.URL
+		ExtendedControlURL.Path = path.Join(ExtendedControlURL.Path, "YamahaExtendedControl", "v1")
 		avTransportClients, err := av1.NewAVTransport1ClientsFromRootDevice(maybeRoot.Root, maybeRoot.Location)
 		if err != nil {
 			return nil, err
 		}
 
 		device = &Device{
-			httpClient:             &http.Client{},
-			extendedControlBaseURL: extendedControlURL,
-			avTransport:            avTransportClients[0],
+			httpClient:  &http.Client{},
+			URL:         ExtendedControlURL,
+			avTransport: avTransportClients[0],
 		}
 		err = device.Sync()
 		if err != nil {
@@ -132,6 +132,20 @@ func (d *Device) PowerOn() (err error) {
 	}
 
 	return err
+}
+
+// GetAlbumArtURL returns the URL to the current album art
+func (d *Device) GetAlbumArtURL() string {
+	if d.Playback.AlbumArtURL == "" {
+		return ""
+	}
+
+	u := url.URL{
+		Scheme: d.URL.Scheme,
+		Host:   d.URL.Host,
+		Path:   d.Playback.AlbumArtURL,
+	}
+	return u.String()
 }
 
 // PowerOff turns the device off
@@ -290,7 +304,7 @@ func (d *Device) request(m string, p string) (resp *http.Response, err error) {
 }
 
 func (d *Device) requestWithParams(m string, p string, q map[string]interface{}) (resp *http.Response, err error) {
-	url := d.extendedControlBaseURL
+	url := d.URL
 	url.Path = path.Join(url.Path, p)
 
 	req, err := http.NewRequest(m, url.String(), nil)

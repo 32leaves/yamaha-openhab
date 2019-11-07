@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"io"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/32leaves/yamaha-openhab/pkg/musiccast"
 	"github.com/go-chi/chi"
@@ -25,7 +28,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		dev := devices[0]
-		log.WithField("name", dev.Name).Info("device found")
+		log.WithField("name", dev.Name).WithField("url", dev.URL.String()).Info("device found")
 
 		router := routes(&remoteDevice{dev})
 		walkFunc := func(method string, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
@@ -36,8 +39,9 @@ var serveCmd = &cobra.Command{
 			log.WithError(err).Error("cannot list all routes")
 		}
 
-		log.Info("server running on :8080")
-		log.Fatal(http.ListenAndServe(":8080", router))
+		addr, _ := cmd.Flags().GetString("address")
+		log.Infof("server running on %s", addr)
+		log.Fatal(http.ListenAndServe(addr, router))
 	},
 }
 
@@ -98,6 +102,39 @@ func (d *remoteDevice) ServeMuteOff(w http.ResponseWriter, r *http.Request) {
 	answerRequest(w, r, err)
 }
 
+func (d *remoteDevice) ServeAlbumArt(w http.ResponseWriter, r *http.Request) {
+	err := d.Origin.Sync()
+	if err != nil {
+		answerRequest(w, r, err)
+		return
+	}
+
+	arturl := d.Origin.GetAlbumArtURL()
+	if arturl == "" {
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	}
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get(arturl)
+	if err != nil {
+		answerRequest(w, r, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
 func answerRequest(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -125,6 +162,7 @@ func routes(dev *remoteDevice) *chi.Mux {
 		r.Get("/volume", dev.ServeGetVolume)
 		r.Post("/mute/on", dev.ServeMuteOn)
 		r.Post("/mute/off", dev.ServeMuteOff)
+		r.Get("/playback/album/art", dev.ServeAlbumArt)
 	})
 
 	return router
@@ -133,13 +171,9 @@ func routes(dev *remoteDevice) *chi.Mux {
 func init() {
 	rootCmd.AddCommand(serveCmd)
 
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// serveCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// serveCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	addr := os.Getenv("YAMAHA_OPENHAB_ADDR")
+	if addr == "" {
+		addr = "localhost:5000"
+	}
+	serveCmd.Flags().StringP("address", "a", addr, "address on which to listen")
 }
